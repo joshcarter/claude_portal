@@ -1,0 +1,6 @@
+CIRCUITPY_WIFI_SSID = "your-wifi-ssid"
+CIRCUITPY_WIFI_PASSWORD = "your-wifi-password"
+HOMESERVER_URL = "http://home.local:8080"
+POLL_SECONDS = "30"
+HISTORY_REFRESH_EVERY_N_POLLS = "5"
+UTC_OFFSET_HOURS = "0"

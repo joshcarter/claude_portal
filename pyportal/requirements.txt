@@ -1,0 +1,6 @@
+adafruit_bitmap_font
+adafruit_connection_manager
+adafruit_display_shapes
+adafruit_display_text
+adafruit_esp32spi
+adafruit_requests

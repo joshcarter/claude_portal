@@ -7,6 +7,12 @@ import busio
 import digitalio
 import displayio
 import terminalio
+bitmaptools = None
+try:
+    import bitmaptools
+    _HAS_BITMAPTOOLS = True
+except ImportError:
+    _HAS_BITMAPTOOLS = False
 from adafruit_bitmap_font import bitmap_font
 from adafruit_display_shapes.rect import Rect
 from adafruit_display_text.label import Label
@@ -45,20 +51,17 @@ C_STALE_BADGE = 0x884400
 # ---------------------------------------------------------------------------
 W, H = 320, 240
 
-# 5-hour bar: 20 segments across ~280px
-SEG_N   = 20
-SEG_W   = 13
-SEG_H   = 14
-SEG_GAP = 1
+# 5-hour bar
 BAR_X   = 20
 BAR_Y   = 22
-# Actual bar width: SEG_N*(SEG_W+SEG_GAP) - SEG_GAP = 20*14-1 = 279
+BAR_W   = 279   # same total span as the old 20-segment layout
+BAR_H   = 14
 
-# Chart area
-CHART_X  = 16
+# Chart area — left edge and width match the 5H bar
+CHART_X  = BAR_X
 CHART_Y  = 78
-CHART_W  = 24 * 11 + 23 * 1  # 24 bars × 11px + 23 × 1px gap = 287px — fits in 304
-CHART_H  = H - CHART_Y - 10   # 152px
+CHART_W  = BAR_W
+CHART_H  = H - CHART_Y - 12   # 150px
 BAR_CW   = 11
 BAR_CGAP = 1
 
@@ -105,15 +108,6 @@ FONT  = _load_font("/fonts/Dogica-Pixel-8.bdf")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def color_for_pct(pct, burn_fast=False):
-    if pct >= 95 or (burn_fast and pct >= 80):
-        return C_RED
-    if pct >= 80 or (burn_fast and pct >= 60):
-        return C_ORANGE
-    if pct >= 60 or (burn_fast and pct < 60):
-        return C_AMBER
-    return C_BLUE
-
 
 def fmt_hhmm(unix_ts):
     # Apply UTC offset and format HH:MM
@@ -152,16 +146,26 @@ root.append(top_panel)
 lbl_5h = Label(FONT, text="5H", color=C_DIM_TEXT, x=BAR_X, y=14)
 root.append(lbl_5h)
 
-# 5-hour segmented bar
-segs_5h = []
-for i in range(SEG_N):
-    sx = BAR_X + i * (SEG_W + SEG_GAP)
-    r = Rect(sx, BAR_Y, SEG_W, SEG_H, fill=C_UNFILLED)
-    root.append(r)
-    segs_5h.append(r)
+# 5-hour bar — solid fill bitmap with outline, no background
+bar_outline = Rect(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2,
+                   fill=None, outline=C_DIM_TEXT)
+root.append(bar_outline)
+
+_BAR_PALETTE = displayio.Palette(5)
+_BAR_PALETTE.make_transparent(0)   # index 0 = transparent (panel shows through)
+_BAR_PALETTE[1] = C_BLUE
+_BAR_PALETTE[2] = C_AMBER
+_BAR_PALETTE[3] = C_ORANGE
+_BAR_PALETTE[4] = C_RED
+
+bar_bitmap = displayio.Bitmap(BAR_W, BAR_H, 5)
+bar_bitmap.fill(0)
+bar_tile = displayio.TileGrid(bar_bitmap, pixel_shader=_BAR_PALETTE,
+                              x=BAR_X, y=BAR_Y)
+root.append(bar_tile)
 
 # Status line (resets / burn rate / ETA)
-lbl_status = Label(FONT, text="", color=C_DIM_TEXT, x=BAR_X, y=48)
+lbl_status = Label(FONT, text="", color=C_DIM_TEXT, x=BAR_X, y=50)
 root.append(lbl_status)
 
 # Separator line
@@ -172,22 +176,22 @@ root.append(sep)
 lbl_chart = Label(FONT, text="24H", color=C_DIM_TEXT, x=BAR_X, y=70)
 root.append(lbl_chart)
 
-# Chart bars (pre-allocated, heights mutated on update)
-chart_bars = []
-for i in range(24):
-    cx = CHART_X + i * (BAR_CW + BAR_CGAP)
-    r = Rect(cx, CHART_Y + CHART_H - 1, BAR_CW, 1, fill=C_UNFILLED)
-    root.append(r)
-    chart_bars.append(r)
+# Chart: single bitmap, all bars blue, transparent background
+# Palette: 0=transparent  1=blue
+_CHART_PALETTE = displayio.Palette(2)
+_CHART_PALETTE.make_transparent(0)
+_CHART_PALETTE[1] = C_BLUE
 
-# Bottom axis
-axis = Rect(CHART_X, CHART_Y + CHART_H, CHART_W, 1, fill=C_SEP)
-root.append(axis)
+chart_bitmap = displayio.Bitmap(CHART_W, CHART_H, 2)
+chart_bitmap.fill(0)
+chart_tile = displayio.TileGrid(chart_bitmap, pixel_shader=_CHART_PALETTE,
+                                x=CHART_X, y=CHART_Y)
+root.append(chart_tile)
 
-# Tick marks at right edge: 0%, 50%, 100%
-for frac in (0.0, 0.5, 1.0):
-    ty = CHART_Y + CHART_H - int(frac * CHART_H)
-    root.append(Rect(CHART_X + CHART_W + 2, ty, 3, 1, fill=C_DIM_TEXT))
+# Outline around chart
+chart_outline = Rect(CHART_X - 1, CHART_Y - 1, CHART_W + 2, CHART_H + 2,
+                     fill=None, outline=C_DIM_TEXT)
+root.append(chart_outline)
 
 # ---------------------------------------------------------------------------
 # Error / stale overlay elements
@@ -220,27 +224,45 @@ root.append(lbl_no_server_hint)
 # Update functions
 # ---------------------------------------------------------------------------
 
-def update_bar(segs, pct, bar_color, unfill_color=C_UNFILLED):
-    filled = int(round(pct / 100.0 * SEG_N))
-    for i, r in enumerate(segs):
-        r.fill = bar_color if i < filled else unfill_color
+def _bar_color_idx(pct, burn_fast=False):
+    if pct >= 95 or (burn_fast and pct >= 80): return 4   # red
+    if pct >= 80 or (burn_fast and pct >= 60): return 3   # orange
+    if pct >= 60 or (burn_fast and pct < 60):  return 2   # amber
+    return 1                                               # blue
+
+
+def update_bar(pct, color_idx):
+    bar_bitmap.fill(0)
+    filled_w = max(0, min(BAR_W, int(round(pct / 100.0 * BAR_W))))
+    if filled_w > 0:
+        if _HAS_BITMAPTOOLS:
+            bitmaptools.fill_region(bar_bitmap, 0, 0, filled_w, BAR_H, color_idx)
+        else:
+            for y in range(BAR_H):
+                for x in range(filled_w):
+                    bar_bitmap[x, y] = color_idx
+
+
+def _fill_col(x0, y0, x1, y1, idx):
+    if _HAS_BITMAPTOOLS:
+        bitmaptools.fill_region(chart_bitmap, x0, y0, x1, y1, idx)
+    else:
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                chart_bitmap[x, y] = idx
 
 
 def update_chart(buckets):
+    chart_bitmap.fill(0)  # clear to unfilled
     for i, bucket in enumerate(buckets):
-        if i >= len(chart_bars):
+        if i >= 24:
             break
-        bar = chart_bars[i]
         peak = bucket.get("five_hour_peak")
         if peak is None:
-            bar.height = 1
-            bar.y = CHART_Y + CHART_H - 1
-            bar.fill = C_UNFILLED
-        else:
-            h = max(1, int(peak / 100.0 * CHART_H))
-            bar.height = h
-            bar.y = CHART_Y + CHART_H - h
-            bar.fill = color_for_pct(peak)
+            continue
+        h = max(1, int(peak / 100.0 * CHART_H))
+        x0 = i * (BAR_CW + BAR_CGAP)
+        _fill_col(x0, CHART_H - h, x0 + BAR_CW, CHART_H, 1)  # always blue
 
 
 def show_normal(data):
@@ -254,9 +276,8 @@ def show_normal(data):
     server_now = data.get("server_now_unix") or int(time.time())
 
     burn_fast = (proj is not None) and (reset_5h > 0) and (proj < reset_5h)
-    col_5h = color_for_pct(pct_5h, burn_fast)
 
-    update_bar(segs_5h, pct_5h, col_5h)
+    update_bar(pct_5h, _bar_color_idx(pct_5h, burn_fast))
 
     # Status line
     parts = []
@@ -314,10 +335,27 @@ def show_no_server(detail=""):
 # Main loop
 # ---------------------------------------------------------------------------
 
+def fetch_history():
+    try:
+        resp = requests.get(SERVER_URL + "/history?hours=24", timeout=15)
+        if resp.status_code == 200:
+            hist = resp.json()
+            resp.close()
+            update_chart(hist.get("buckets", []))
+        else:
+            resp.close()
+    except Exception as e:
+        print("history fetch exception:", type(e).__name__, e)
+    gc.collect()
+
+
 wifi_connect()
 
 last_status = {}
 poll_count  = 0
+
+# Populate the chart immediately before entering the poll loop
+fetch_history()
 
 while True:
     # --- fetch /status ---
@@ -349,19 +387,9 @@ while True:
     else:
         show_normal(last_status)
 
-    # --- fetch /history every N polls ---
+    # --- refresh /history every N polls ---
     poll_count += 1
     if server_ok and poll_count % HIST_EVERY == 0:
-        try:
-            resp = requests.get(SERVER_URL + "/history?hours=24", timeout=15)
-            if resp.status_code == 200:
-                hist = resp.json()
-                resp.close()
-                update_chart(hist.get("buckets", []))
-            else:
-                resp.close()
-        except Exception:
-            pass
-        gc.collect()
+        fetch_history()
 
     time.sleep(POLL_SECS)

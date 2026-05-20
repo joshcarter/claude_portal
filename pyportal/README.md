@@ -16,45 +16,39 @@ circup install -r pyportal/requirements.txt
 
 If you ever need to check for outdated libraries later: `circup update`.
 
-## Exo 2 font (required)
+## Font
 
-The display uses [Exo 2](https://fonts.google.com/specimen/Exo+2) in three sizes.
-You need BDF versions; CircuitPython cannot load TTF.
+The display uses [Dogica Pixel](https://www.dafont.com/dogica.font) at 8px — a single BDF file for all text.
 
-**Option A — use the pre-converted files** (if provided in this repo under `fonts/`):
-Copy `fonts/` to the root of CIRCUITPY.
+CircuitPython cannot load OTF/TTF directly, so you need to convert it to BDF first.
 
-**Option B — convert yourself:**
+### Converting Dogica Pixel to BDF
 
-1. Download Exo 2 from Google Fonts (the `Exo2-Regular.ttf` file).
-2. Install fonttools: `pip install fonttools`
-3. Install otf2bdf or use the Adafruit font conversion script:
+1. Download **Dogica Pixel** (`dogicapixel.otf`) from the link above.
+2. Install `otf2bdf`:
+   ```bash
+   brew install otf2bdf   # macOS
    ```
-   pip install adafruit-circuitpython-bitmap-font
-   python -c "
-   from fonttools.ttLib import TTFont
-   " 
+3. Convert at 8pt/72dpi so each font pixel maps 1:1 to a display pixel:
+   ```bash
+   otf2bdf -p 8 -r 72 dogicapixel.otf -o Dogica-Pixel-8.bdf
    ```
-   The easiest path is the Adafruit `convert_font` tool:
+4. Verify the output looks clean — glyph rows should be clean hex patterns
+   with no anti-aliasing noise:
+   ```bash
+   grep -A 12 "STARTCHAR A" Dogica-Pixel-8.bdf
    ```
-   pip install adafruit-circuitpython-bitmap-font
-   python -m adafruit_bitmap_font.font_converter Exo2-Regular.ttf 11
-   python -m adafruit_bitmap_font.font_converter Exo2-Regular.ttf 14
-   python -m adafruit_bitmap_font.font_converter Exo2-Regular.ttf 20
-   ```
-   This produces `Exo2-Regular-11.bdf`, `Exo2-Regular-14.bdf`, `Exo2-Regular-20.bdf`.
+5. Create `/fonts/` on CIRCUITPY and copy `Dogica-Pixel-8.bdf` there.
 
-4. Create `/fonts/` on CIRCUITPY and copy the three `.bdf` files there.
-
-If the font files are missing at boot, the code falls back to the built-in
+If the font file is missing at boot, the code falls back to the built-in
 `terminalio.FONT` so the display still works — just less stylish.
 
 ## Installation
 
 1. Copy `code.py` to the root of CIRCUITPY.
 2. Copy `settings.toml.example` to `settings.toml` and fill in your values.
-3. Copy the `fonts/` directory as above.
-4. Copy the required libraries into `/lib`.
+3. Copy `Dogica-Pixel-8.bdf` into `/fonts/` on CIRCUITPY as above.
+4. Copy the required libraries into `/lib` (via `circup`).
 
 ## Configuration (`settings.toml`)
 
@@ -62,23 +56,54 @@ If the font files are missing at boot, the code falls back to the built-in
 |-----|---------|-------|
 | `CIRCUITPY_WIFI_SSID` | — | Required |
 | `CIRCUITPY_WIFI_PASSWORD` | — | Required |
-| `HOMESERVER_URL` | `http://home.local:8080` | IP or mDNS hostname of the poller |
+| `HOMESERVER_URL` | `http://home.local:7654` | IP or mDNS hostname of the poller |
 | `POLL_SECONDS` | `30` | How often to fetch `/status` |
-| `HISTORY_REFRESH_EVERY_N_POLLS` | `5` | Fetch `/history` every N polls (~2.5 min) |
+| `HISTORY_REFRESH_EVERY_N_POLLS` | `5` | Refresh 24H chart every N status polls |
 | `UTC_OFFSET_HOURS` | `0` | Integer UTC offset for displayed times (e.g. `-7` for PDT) |
+
+## Display layout
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 5H  [████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] │  ← solid fill bar (blue/amber/orange/red)
+│     resets 14:30 · 8.5%/hr · →~1h12m               │  ← status line
+├─────────────────────────────────────────────────────┤
+│ 24H                                                 │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │    ▌▌  ▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌             │ │  ← hourly peaks, always blue
+│ └─────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+**5H bar** — solid fill, color-coded by usage level:
+
+| Color | Meaning |
+|-------|---------|
+| Blue | < 60% used |
+| Amber | 60–79% used |
+| Orange | 80–94% used (or burning fast) |
+| Red | ≥ 95% used (or projected to fill before reset) |
+
+**24H chart** — one column per hour, height = peak 5H usage during that hour.
+All bars are blue; the 5H bar carries the urgency color signal.
+
+**Status line** — shows reset time, current burn rate, and projected time to full.
+Hidden when there's nothing to show.
 
 ## Display states
 
 | State | Appearance |
 |-------|-----------|
-| Normal | Full brightness, colored segmented bars, burn rate status |
+| Normal | Full brightness, bar and chart active |
 | Stale | 40% brightness, "STALE" badge top-right |
 | Needs auth | 30% brightness, "NEEDS AUTH" + hint text centered |
-| No server | 50% brightness, "NO SERVER" + URL hint centered |
+| No server / no wifi | 50% brightness, error message centered |
 
 ## Memory notes
 
 The SAMD51 has ~60–80 KB free after CircuitPython + libraries. The scene graph
-is built once at startup; the main loop only mutates existing objects. If you hit
-`MemoryError` at boot, try removing the 7-day bar segments (reduce `SEG_N` or
-comment out the `segs_7d` block) or dropping to smaller font sizes.
+is built once at startup and the main loop only mutates bitmap contents —
+no display objects are added or removed at runtime. The two bitmaps
+(5H bar: 279×14, 24H chart: 279×150) together use ~50 KB, well within limits.
+If `bitmaptools` is available it's used for fast rectangle fills; otherwise the
+code falls back to manual pixel writes (slower but correct).

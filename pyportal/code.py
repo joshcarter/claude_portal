@@ -19,7 +19,7 @@ import adafruit_requests
 # ---------------------------------------------------------------------------
 SSID         = os.getenv("CIRCUITPY_WIFI_SSID", "")
 PASSWORD     = os.getenv("CIRCUITPY_WIFI_PASSWORD", "")
-SERVER_URL   = os.getenv("HOMESERVER_URL", "http://home.local:8080")
+SERVER_URL   = os.getenv("HOMESERVER_URL", "http://home.local:7654")
 POLL_SECS    = int(os.getenv("POLL_SECONDS", "30"))
 HIST_EVERY   = int(os.getenv("HISTORY_REFRESH_EVERY_N_POLLS", "5"))
 UTC_OFFSET   = int(os.getenv("UTC_OFFSET_HOURS", "0"))
@@ -54,15 +54,11 @@ BAR_X   = 20
 BAR_Y   = 22
 # Actual bar width: SEG_N*(SEG_W+SEG_GAP) - SEG_GAP = 20*14-1 = 279
 
-# 7-day thin bar
-SEG7_H  = 6
-BAR7_Y  = 50
-
 # Chart area
 CHART_X  = 16
-CHART_Y  = 80
+CHART_Y  = 78
 CHART_W  = 24 * 11 + 23 * 1  # 24 bars × 11px + 23 × 1px gap = 287px — fits in 304
-CHART_H  = H - CHART_Y - 10   # 150px
+CHART_H  = H - CHART_Y - 10   # 152px
 BAR_CW   = 11
 BAR_CGAP = 1
 
@@ -103,9 +99,7 @@ def _load_font(path):
         return terminalio.FONT
 
 
-FONT_LG  = _load_font("/fonts/Exo2-Regular-20.bdf")   # percentages
-FONT_MD  = _load_font("/fonts/Exo2-Regular-14.bdf")   # status line
-FONT_SM  = _load_font("/fonts/Exo2-Regular-11.bdf")   # labels / badges
+FONT  = _load_font("/fonts/Dogica-Pixel-8.bdf")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -151,16 +145,12 @@ bg = Rect(0, 0, W, H, fill=C_BG)
 root.append(bg)
 
 # Top panel (5-hour section)
-top_panel = Rect(0, 0, W, 66, fill=C_PANEL)
+top_panel = Rect(0, 0, W, 60, fill=C_PANEL)
 root.append(top_panel)
 
 # "5H" label
-lbl_5h = Label(FONT_SM, text="5H", color=C_DIM_TEXT, x=BAR_X, y=10)
+lbl_5h = Label(FONT, text="5H", color=C_DIM_TEXT, x=BAR_X, y=14)
 root.append(lbl_5h)
-
-# 5-hour percentage (right of label area)
-lbl_5h_pct = Label(FONT_LG, text="---%", color=C_TEXT, x=50, y=10)
-root.append(lbl_5h_pct)
 
 # 5-hour segmented bar
 segs_5h = []
@@ -171,29 +161,15 @@ for i in range(SEG_N):
     segs_5h.append(r)
 
 # Status line (resets / burn rate / ETA)
-lbl_status = Label(FONT_MD, text="", color=C_DIM_TEXT, x=BAR_X, y=41)
+lbl_status = Label(FONT, text="", color=C_DIM_TEXT, x=BAR_X, y=48)
 root.append(lbl_status)
 
-# 7-day thin bar label + segments
-lbl_7d = Label(FONT_SM, text="7D", color=C_DIM_TEXT, x=BAR_X, y=53)
-root.append(lbl_7d)
-
-lbl_7d_pct = Label(FONT_SM, text="---%", color=C_DIM_TEXT, x=40, y=53)
-root.append(lbl_7d_pct)
-
-segs_7d = []
-for i in range(SEG_N):
-    sx = BAR_X + i * (SEG_W + SEG_GAP)
-    r = Rect(sx, BAR7_Y, SEG_W, SEG7_H, fill=C_UNFILLED)
-    root.append(r)
-    segs_7d.append(r)
-
 # Separator line
-sep = Rect(0, 67, W, 1, fill=C_SEP)
+sep = Rect(0, 60, W, 1, fill=C_SEP)
 root.append(sep)
 
 # Chart area label
-lbl_chart = Label(FONT_SM, text="24H", color=C_DIM_TEXT, x=BAR_X, y=76)
+lbl_chart = Label(FONT, text="24H", color=C_DIM_TEXT, x=BAR_X, y=70)
 root.append(lbl_chart)
 
 # Chart bars (pre-allocated, heights mutated on update)
@@ -218,25 +194,25 @@ for frac in (0.0, 0.5, 1.0):
 # ---------------------------------------------------------------------------
 
 # "STALE" badge (top right)
-lbl_stale = Label(FONT_SM, text="STALE", color=C_AMBER, x=W - 42, y=6)
+lbl_stale = Label(FONT, text="STALE", color=C_AMBER, x=W - 42, y=6)
 lbl_stale.hidden = True
 root.append(lbl_stale)
 
 # "NEEDS AUTH" overlay (center)
-lbl_auth = Label(FONT_MD, text="NEEDS AUTH", color=C_ERROR, x=90, y=H // 2 - 8)
+lbl_auth = Label(FONT, text="NEEDS AUTH", color=C_ERROR, x=90, y=H // 2 - 8)
 lbl_auth.hidden = True
 root.append(lbl_auth)
 
-lbl_auth_hint = Label(FONT_SM, text="update CLAUDE_SESSION_KEY", color=C_DIM_TEXT, x=28, y=H // 2 + 10)
+lbl_auth_hint = Label(FONT, text="update CLAUDE_SESSION_KEY", color=C_DIM_TEXT, x=28, y=H // 2 + 10)
 lbl_auth_hint.hidden = True
 root.append(lbl_auth_hint)
 
 # "NO SERVER" overlay (center)
-lbl_no_server = Label(FONT_MD, text="NO SERVER", color=C_ERROR, x=96, y=H // 2 - 8)
+lbl_no_server = Label(FONT, text="NO SERVER", color=C_ERROR, x=96, y=H // 2 - 8)
 lbl_no_server.hidden = True
 root.append(lbl_no_server)
 
-lbl_no_server_hint = Label(FONT_SM, text="can't reach " + SERVER_URL, color=C_DIM_TEXT, x=28, y=H // 2 + 10)
+lbl_no_server_hint = Label(FONT, text="can't reach " + SERVER_URL, color=C_DIM_TEXT, x=28, y=H // 2 + 10)
 lbl_no_server_hint.hidden = True
 root.append(lbl_no_server_hint)
 
@@ -271,10 +247,8 @@ def show_normal(data):
     board.DISPLAY.brightness = 1.0
 
     fh = data.get("five_hour") or {}
-    sd = data.get("seven_day") or {}
     pct_5h   = fh.get("used_pct") or 0.0
     reset_5h = fh.get("resets_at_unix") or 0
-    pct_7d   = sd.get("used_pct") or 0.0
     burn     = data.get("burn_rate_pct_per_hour") or 0.0
     proj     = data.get("projected_full_at_unix")
     server_now = data.get("server_now_unix") or int(time.time())
@@ -282,8 +256,6 @@ def show_normal(data):
     burn_fast = (proj is not None) and (reset_5h > 0) and (proj < reset_5h)
     col_5h = color_for_pct(pct_5h, burn_fast)
 
-    lbl_5h_pct.text = "{:.0f}%".format(pct_5h)
-    lbl_5h_pct.color = col_5h
     update_bar(segs_5h, pct_5h, col_5h)
 
     # Status line
@@ -296,11 +268,6 @@ def show_normal(data):
             remaining = proj - server_now
             parts.append("→ " + fmt_duration(remaining))
     lbl_status.text = " · ".join(parts) if parts else ""
-
-    # 7-day bar
-    col_7d = color_for_pct(pct_7d)
-    lbl_7d_pct.text = "{:.0f}%".format(pct_7d)
-    update_bar(segs_7d, pct_7d, col_7d)
 
     lbl_stale.hidden = True
     lbl_auth.hidden = True

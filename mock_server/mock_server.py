@@ -58,16 +58,11 @@ def _status() -> dict:
     cycle = (now % 240) / 240.0          # 0.0 → 1.0 over 4 minutes
     pct_5h = 40.0 + 45.0 * abs(math.sin(cycle * math.pi))
 
-    # Resets roughly 2 hours from now
+    # 5H resets ~2 hours out; fixed burn rate so the redline tracks pct_5h.
     resets_at = now + 2 * 3600
-
-    # Burn rate drives the projected-full calculation
     burn = 8.5  # %/hr
-    remaining_pct = 100.0 - pct_5h
-    projected_full_at = now + int((remaining_pct / burn) * 3600) if burn > 0 else None
-
-    # Projected-full before reset → triggers "burn fast" colour on bar
-    burn_fast = projected_full_at is not None and projected_full_at < resets_at
+    sustainable_5h = (100.0 - pct_5h) / ((resets_at - now) / 3600)
+    redline_5h = min(burn / sustainable_5h, 10.0) if sustainable_5h > 0 else 10.0
 
     # 7-day window: burn oscillates around its sustainable rate on a slower
     # ~6-minute cycle, so the redline indicator can be watched crossing 1.0.
@@ -82,6 +77,9 @@ def _status() -> dict:
         "five_hour": {
             "used_pct": round(pct_5h, 1),
             "resets_at_unix": resets_at,
+            "burn_rate_pct_per_hour": burn,
+            "sustainable_pct_per_hour": round(sustainable_5h, 3),
+            "redline_ratio": round(redline_5h, 2),
         },
         "seven_day": {
             "used_pct": seven_pct,
@@ -91,15 +89,10 @@ def _status() -> dict:
             "redline_ratio": round(seven_redline_ratio, 2),
         },
         "seven_day_opus": None,
-        "burn_rate_pct_per_hour": burn,
-        "projected_full_at_unix": projected_full_at,
         "stale": False,
         "auth_failed": False,
         "last_update_unix": now,
         "server_now_unix": now,
-        # informational only — not used by pyportal
-        "_burn_fast": burn_fast,
-        "_pct_5h": round(pct_5h, 1),
     }
 
 
@@ -149,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Mock server listening on http://0.0.0.0:{PORT}")
-    print(f"  /status   — 5H usage oscillates 40–85% on a 4-minute cycle;")
+    print(f"  /status   — 5H usage + redline oscillate on a 4-minute cycle;")
     print(f"              7D redline_ratio oscillates 0.2–1.8 on a 6-minute cycle")
     print(f"  /history  — 24h workday-shaped histogram with a few empty buckets")
     print()

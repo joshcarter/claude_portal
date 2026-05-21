@@ -4,7 +4,7 @@ import time
 from src.poller import (
     MAX_REDLINE_RATIO,
     _compute_seven_day_burn,
-    _seven_day_redline,
+    _redline,
 )
 from src.store import Store
 
@@ -57,7 +57,7 @@ def test_redline_normal():
     now = int(time.time())
     resets_at = now + 48 * 3600
     # sustainable = (100 - 76) / 48 = 0.5 %/hr
-    sustainable, ratio = _seven_day_redline(76.0, resets_at, burn=1.0, now=now)
+    sustainable, ratio = _redline(76.0, resets_at, burn=1.0, now=now)
     assert sustainable is not None and ratio is not None
     assert abs(sustainable - 0.5) < 1e-6
     assert abs(ratio - 2.0) < 1e-6
@@ -65,24 +65,24 @@ def test_redline_normal():
 
 def test_redline_idle_when_burn_zero():
     now = int(time.time())
-    sustainable, ratio = _seven_day_redline(76.0, now + 48 * 3600, burn=0.0, now=now)
+    sustainable, ratio = _redline(76.0, now + 48 * 3600, burn=0.0, now=now)
     assert sustainable is not None and sustainable > 0
     assert ratio == 0.0
 
 
 def test_redline_none_when_no_reset_time():
     now = int(time.time())
-    assert _seven_day_redline(50.0, None, burn=1.0, now=now) == (None, None)
+    assert _redline(50.0, None, burn=1.0, now=now) == (None, None)
 
 
 def test_redline_none_when_reset_in_past():
     now = int(time.time())
-    assert _seven_day_redline(50.0, now - 3600, burn=1.0, now=now) == (None, None)
+    assert _redline(50.0, now - 3600, burn=1.0, now=now) == (None, None)
 
 
 def test_redline_pinned_when_window_full():
     now = int(time.time())
-    sustainable, ratio = _seven_day_redline(100.0, now + 48 * 3600, burn=1.0, now=now)
+    sustainable, ratio = _redline(100.0, now + 48 * 3600, burn=1.0, now=now)
     assert sustainable == 0.0
     assert ratio == MAX_REDLINE_RATIO
 
@@ -90,5 +90,5 @@ def test_redline_pinned_when_window_full():
 def test_redline_ratio_capped():
     now = int(time.time())
     # tiny headroom, huge burn -> ratio would explode; must clamp
-    _, ratio = _seven_day_redline(99.9, now + 48 * 3600, burn=50.0, now=now)
+    _, ratio = _redline(99.9, now + 48 * 3600, burn=50.0, now=now)
     assert ratio == MAX_REDLINE_RATIO

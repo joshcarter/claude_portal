@@ -43,47 +43,36 @@ async def _fetch_org_id(session: AsyncSession) -> Optional[str]:
     return orgs[0]["uuid"]
 
 
-def _compute_burn_rate(store: Store) -> tuple[float, Optional[int]]:
-    now = int(time.time())
-    rows = store.recent_five_hour(now - 30 * 60)
-    if len(rows) < 2:
-        return 0.0, None
-
-    latest_ts, latest_pct = rows[-1]
-    earliest_ts, earliest_pct = rows[0]
-    dt_hours = (latest_ts - earliest_ts) / 3600
-    if dt_hours < 1e-4:
-        return 0.0, None
-
-    rate = (latest_pct - earliest_pct) / dt_hours
-    if rate <= 0:
-        return 0.0, None
-
-    hours_to_full = min((100.0 - latest_pct) / rate, 24.0)
-    return rate, now + int(hours_to_full * 3600)
-
-
-def _compute_seven_day_burn(store: Store) -> float:
-    """7-day burn rate (pct/hour) over a multi-hour baseline; 0.0 if decaying or sparse."""
-    now = int(time.time())
-    rows = store.recent_seven_day(now - SEVEN_DAY_BURN_BASELINE)
+def _burn_rate(rows: list[tuple[int, float]], min_dt_hours: float) -> float:
+    """Linear burn rate (pct/hour) across the sample window; 0.0 if decaying or too sparse."""
     if len(rows) < 2:
         return 0.0
 
-    earliest_ts, earliest_pct = rows[0]
-    latest_ts, latest_pct = rows[-1]
+    (earliest_ts, earliest_pct), (latest_ts, latest_pct) = rows[0], rows[-1]
     dt_hours = (latest_ts - earliest_ts) / 3600
-    if dt_hours < 1.0:
+    if dt_hours < min_dt_hours:
         return 0.0
 
     rate = (latest_pct - earliest_pct) / dt_hours
     return rate if rate > 0 else 0.0
 
 
-def _seven_day_redline(
+def _compute_five_hour_burn(store: Store) -> float:
+    return _burn_rate(store.recent_five_hour(int(time.time()) - 30 * 60), 1e-4)
+
+
+def _compute_seven_day_burn(store: Store) -> float:
+    return _burn_rate(store.recent_seven_day(int(time.time()) - SEVEN_DAY_BURN_BASELINE), 1.0)
+
+
+def _fmt_ratio(ratio: Optional[float]) -> str:
+    return "n/a" if ratio is None else "{:.2f}".format(ratio)
+
+
+def _redline(
     pct: float, resets_at: Optional[int], burn: float, now: int
 ) -> tuple[Optional[float], Optional[float]]:
-    """Return (sustainable pct/hour, redline_ratio) for the 7-day window; ratio 1.0 = redline."""
+    """Return (sustainable pct/hour, redline_ratio) for a usage window; ratio 1.0 = redline."""
     if resets_at is None:
         return None, None
     hours_to_reset = (resets_at - now) / 3600
@@ -155,27 +144,32 @@ async def polling_loop(store: Store) -> None:
                     store.insert(now, five_pct, seven_pct, opus_pct)
                     store.prune(now - 7 * 24 * 3600)
 
-                    burn_rate, projected = _compute_burn_rate(store)
-
+                    five_resets = _iso_to_unix(fh["resets_at"])
                     seven_resets = _iso_to_unix(sd["resets_at"])
+
+                    five_burn = _compute_five_hour_burn(store)
+                    five_sustainable, five_ratio = _redline(
+                        five_pct, five_resets, five_burn, now
+                    )
                     seven_burn = _compute_seven_day_burn(store)
-                    seven_sustainable, seven_ratio = _seven_day_redline(
+                    seven_sustainable, seven_ratio = _redline(
                         seven_pct, seven_resets, seven_burn, now
                     )
 
                     state.snapshot.five_hour_pct = five_pct
-                    state.snapshot.five_hour_resets_at = _iso_to_unix(fh["resets_at"])
+                    state.snapshot.five_hour_resets_at = five_resets
+                    state.snapshot.five_hour_burn_rate = five_burn
+                    state.snapshot.five_hour_sustainable_rate = five_sustainable
+                    state.snapshot.five_hour_redline_ratio = five_ratio
                     state.snapshot.seven_day_pct = seven_pct
                     state.snapshot.seven_day_resets_at = seven_resets
+                    state.snapshot.seven_day_burn_rate = seven_burn
+                    state.snapshot.seven_day_sustainable_rate = seven_sustainable
+                    state.snapshot.seven_day_redline_ratio = seven_ratio
                     state.snapshot.seven_day_opus_pct = opus_pct
                     state.snapshot.seven_day_opus_resets_at = (
                         _iso_to_unix(sdo["resets_at"]) if sdo else None
                     )
-                    state.snapshot.burn_rate = burn_rate
-                    state.snapshot.projected_full_at = projected
-                    state.snapshot.seven_day_burn_rate = seven_burn
-                    state.snapshot.seven_day_sustainable_rate = seven_sustainable
-                    state.snapshot.seven_day_redline_ratio = seven_ratio
                     state.snapshot.stale = False
                     state.snapshot.auth_failed = False
                     state.snapshot.last_update = now
@@ -183,11 +177,11 @@ async def polling_loop(store: Store) -> None:
                     backoff = interval
 
                     log.debug(
-                        "Polled: 5h=%.1f%% 7d=%.1f%% burn=%.2f%%/hr 7d_redline=%s",
+                        "Polled: 5h=%.1f%% redline=%s  7d=%.1f%% redline=%s",
                         five_pct,
+                        _fmt_ratio(five_ratio),
                         seven_pct,
-                        burn_rate,
-                        "n/a" if seven_ratio is None else "{:.2f}".format(seven_ratio),
+                        _fmt_ratio(seven_ratio),
                     )
 
                 except (KeyError, ValueError, TypeError) as exc:

@@ -271,11 +271,10 @@ def show_normal(data):
     fh = data.get("five_hour") or {}
     pct_5h   = fh.get("used_pct") or 0.0
     reset_5h = fh.get("resets_at_unix") or 0
-    burn     = data.get("burn_rate_pct_per_hour") or 0.0
-    proj     = data.get("projected_full_at_unix")
-    server_now = data.get("server_now_unix") or int(time.time())
+    burn     = fh.get("burn_rate_pct_per_hour") or 0.0
+    redline  = fh.get("redline_ratio")
 
-    burn_fast = (proj is not None) and (reset_5h > 0) and (proj < reset_5h)
+    burn_fast = (redline is not None) and (redline > 1.0)
 
     update_bar(pct_5h, _bar_color_idx(pct_5h, burn_fast))
 
@@ -285,9 +284,8 @@ def show_normal(data):
         parts.append("resets " + fmt_hhmm(reset_5h))
     if burn > 0:
         parts.append("{:.1f}%/hr".format(burn))
-        if proj:
-            remaining = proj - server_now
-            parts.append("→ " + fmt_duration(remaining))
+        eta_secs = min(int((100.0 - pct_5h) / burn * 3600), 24 * 3600)
+        parts.append("→ " + fmt_duration(eta_secs))
     lbl_status.text = " · ".join(parts) if parts else ""
 
     lbl_stale.hidden = True

@@ -51,6 +51,9 @@ def status():
         "five_hour": {
             "used_pct": s.five_hour_pct,
             "resets_at_unix": s.five_hour_resets_at,
+            "burn_rate_pct_per_hour": s.five_hour_burn_rate,
+            "sustainable_pct_per_hour": s.five_hour_sustainable_rate,
+            "redline_ratio": s.five_hour_redline_ratio,
         },
         "seven_day": {
             "used_pct": s.seven_day_pct,
@@ -60,8 +63,6 @@ def status():
             "redline_ratio": s.seven_day_redline_ratio,
         },
         "seven_day_opus": seven_day_opus,
-        "burn_rate_pct_per_hour": s.burn_rate,
-        "projected_full_at_unix": s.projected_full_at,
         "stale": s.stale,
         "auth_failed": s.auth_failed,
         "last_update_unix": s.last_update,

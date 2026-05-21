@@ -17,15 +17,16 @@ from src.store import Store
 def reset_state():
     state.snapshot.five_hour_pct = 34.0
     state.snapshot.five_hour_resets_at = 1745525400
+    state.snapshot.five_hour_burn_rate = 8.3
+    state.snapshot.five_hour_sustainable_rate = 13.2
+    state.snapshot.five_hour_redline_ratio = 0.63
     state.snapshot.seven_day_pct = 72.0
     state.snapshot.seven_day_resets_at = 1745640000
-    state.snapshot.seven_day_opus_pct = 93.5
-    state.snapshot.seven_day_opus_resets_at = 1745812800
-    state.snapshot.burn_rate = 8.3
-    state.snapshot.projected_full_at = 1745540000
     state.snapshot.seven_day_burn_rate = 1.2
     state.snapshot.seven_day_sustainable_rate = 0.5
     state.snapshot.seven_day_redline_ratio = 2.4
+    state.snapshot.seven_day_opus_pct = 93.5
+    state.snapshot.seven_day_opus_resets_at = 1745812800
     state.snapshot.stale = False
     state.snapshot.auth_failed = False
     state.snapshot.last_update = int(time.time())
@@ -58,8 +59,11 @@ def test_status_shape(client):
     body = r.json()
 
     assert "five_hour" in body
-    assert "used_pct" in body["five_hour"]
+    assert body["five_hour"]["used_pct"] == 34.0
     assert "resets_at_unix" in body["five_hour"]
+    assert body["five_hour"]["burn_rate_pct_per_hour"] == 8.3
+    assert body["five_hour"]["sustainable_pct_per_hour"] == 13.2
+    assert body["five_hour"]["redline_ratio"] == 0.63
 
     assert "seven_day" in body
     assert body["seven_day"]["burn_rate_pct_per_hour"] == 1.2
@@ -67,7 +71,11 @@ def test_status_shape(client):
     assert body["seven_day"]["redline_ratio"] == 2.4
     assert "seven_day_opus" in body
 
-    assert isinstance(body["burn_rate_pct_per_hour"], float)
+    # 5H and 7D carry the identical field set; nothing window-specific at top level
+    assert set(body["five_hour"]) == set(body["seven_day"])
+    assert "burn_rate_pct_per_hour" not in body
+    assert "projected_full_at_unix" not in body
+
     assert isinstance(body["stale"], bool)
     assert isinstance(body["auth_failed"], bool)
     assert isinstance(body["last_update_unix"], int)
@@ -97,9 +105,11 @@ def test_history_shape(client):
 
 
 def test_history_empty_buckets_are_null(client):
-    r = client.get("/history?hours=2")
+    # The two fixture samples span ~30 min, so they fill at most 2 adjacent
+    # hour-buckets — with 4 buckets at least one is guaranteed empty regardless
+    # of what minute of the hour the test runs at.
+    r = client.get("/history?hours=4")
     body = r.json()
-    # At least the bucket before last hour should be null (no data inserted there)
     peaks = [b["five_hour_peak"] for b in body["buckets"]]
     assert None in peaks
 

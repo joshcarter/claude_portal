@@ -1,3 +1,10 @@
+# Claude usage dashboard — tachometer display.
+#
+# A 21-frame tachometer gauge (top-left) with a 7-segment style numeric
+# readout in its centre, a Dogica status line bottom-left, and a small
+# 7-day utilisation bar bottom-right. Boot plays a sweep animation while
+# the ESP32 joins WiFi.
+
 import gc
 import os
 import time
@@ -20,54 +27,37 @@ from adafruit_esp32spi import adafruit_esp32spi
 import adafruit_connection_manager
 import adafruit_requests
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-SSID         = os.getenv("CIRCUITPY_WIFI_SSID", "")
-PASSWORD     = os.getenv("CIRCUITPY_WIFI_PASSWORD", "")
-SERVER_URL   = os.getenv("HOMESERVER_URL", "http://home.local:7654")
-POLL_SECS    = int(os.getenv("POLL_SECONDS", "30"))
-HIST_EVERY   = int(os.getenv("HISTORY_REFRESH_EVERY_N_POLLS", "5"))
-UTC_OFFSET   = int(os.getenv("UTC_OFFSET_HOURS", "0"))
+# --- Config -----------------------------------------------------------------
+SSID       = os.getenv("CIRCUITPY_WIFI_SSID", "")
+PASSWORD   = os.getenv("CIRCUITPY_WIFI_PASSWORD", "")
+SERVER_URL = os.getenv("HOMESERVER_URL", "http://home.local:7654")
+POLL_SECS  = int(os.getenv("POLL_SECONDS", "30"))
+UTC_OFFSET = int(os.getenv("UTC_OFFSET_HOURS", "0"))
 
-# ---------------------------------------------------------------------------
-# Colors
-# ---------------------------------------------------------------------------
-C_BG         = 0x000810
-C_PANEL      = 0x000E1C
-C_SEP        = 0x003355
-C_TEXT       = 0x00BBFF
-C_DIM_TEXT   = 0x004466
-C_UNFILLED   = 0x001833
-C_BLUE       = 0x0055EE
-C_AMBER      = 0xFFAA00
-C_ORANGE     = 0xFF4400
-C_RED        = 0xFF0000
-C_ERROR      = 0xFF2200
-C_STALE_BADGE = 0x884400
+# --- Colors -----------------------------------------------------------------
+C_BG    = 0x000000
+C_DARK  = 0x0B1D20   # unlit "ghost" segments and 7D bar background
+C_LIGHT = 0x40A9BF   # live number, status text, 7D bar fill
+C_ERROR = 0xFF2200
 
-# ---------------------------------------------------------------------------
-# Display dimensions
-# ---------------------------------------------------------------------------
+# --- Layout -----------------------------------------------------------------
 W, H = 320, 240
 
-# 5-hour bar
-BAR_X   = 20
-BAR_Y   = 22
-BAR_W   = 279   # same total span as the old 20-segment layout
-BAR_H   = 14
+TACH_BMP        = "/bmp/tach{}.bmp"
+TACH_FRAMES     = 21               # tach0 .. tach20
+TACH_X, TACH_Y  = 12, 14
+TACH_FULL_SCALE = 2.0              # 5H redline_ratio that lights every segment
 
-# Chart area — left edge and width match the 5H bar
-CHART_X  = BAR_X
-CHART_Y  = 78
-CHART_W  = BAR_W
-CHART_H  = H - CHART_Y - 12   # 150px
-BAR_CW   = 11
-BAR_CGAP = 1
+NUM_FONT_PATH = "/fonts/DESG7Modern-Italic-40.bdf"
+NUM_X, NUM_Y  = 180, 160           # left/baseline of the "88" ghost
 
-# ---------------------------------------------------------------------------
-# WiFi + requests setup
-# ---------------------------------------------------------------------------
+STATUS_FONT_PATH   = "/fonts/Dogica-Pixel-8.bdf"
+STATUS_X, STATUS_Y = 10, 225
+
+BAR7D_X, BAR7D_Y = 250, 220        # x=180 .. x=307
+BAR7D_W, BAR7D_H = 57, 9
+
+# --- Hardware: ESP32 --------------------------------------------------------
 esp32_cs    = digitalio.DigitalInOut(board.ESP_CS)
 esp32_ready = digitalio.DigitalInOut(board.ESP_BUSY)
 esp32_reset = digitalio.DigitalInOut(board.ESP_RESET)
@@ -75,42 +65,25 @@ spi         = busio.SPI(board.SCK, board.MOSI, board.MISO)
 esp         = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
 requests    = None
 
-
-def wifi_connect():
-    global requests
-    print("WiFi: resetting ESP32")
-    esp.reset()
-    print("WiFi: connecting to", SSID)
-    while not esp.is_connected:
-        try:
-            esp.connect_AP(SSID, PASSWORD)
-            print("WiFi: connected, IP =", esp.pretty_ip(esp.ip_address))
-        except Exception as e:
-            print("WiFi: connect failed:", type(e).__name__, e)
-            time.sleep(2)
-    pool     = adafruit_connection_manager.get_radio_socketpool(esp)
-    requests = adafruit_requests.Session(pool)
+# Reset the ESP now so it settles while the UI is built and the animation runs.
+esp.reset()
 
 
-# ---------------------------------------------------------------------------
-# Font loading — falls back to built-in terminalio if BDF not found
-# ---------------------------------------------------------------------------
 def _load_font(path):
     try:
         return bitmap_font.load_font(path)
-    except Exception:
+    except Exception as exc:
+        print("font load failed:", path, exc)
         return terminalio.FONT
 
 
-FONT  = _load_font("/fonts/Dogica-Pixel-8.bdf")
+NUM_FONT    = _load_font(NUM_FONT_PATH)
+STATUS_FONT = _load_font(STATUS_FONT_PATH)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# --- Helpers ----------------------------------------------------------------
 
 
 def fmt_hhmm(unix_ts):
-    # Apply UTC offset and format HH:MM
     local = unix_ts + UTC_OFFSET * 3600
     h = (local // 3600) % 24
     m = (local // 60) % 60
@@ -127,267 +100,200 @@ def fmt_duration(seconds):
     return "~{}m".format(m)
 
 
-# ---------------------------------------------------------------------------
-# Scene graph construction — build once, mutate in loop
-# ---------------------------------------------------------------------------
+def _clamp01(x):
+    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
 
+
+# --- Scene graph ------------------------------------------------------------
 root = displayio.Group()
 board.DISPLAY.root_group = root
 
-# Background
-bg = Rect(0, 0, W, H, fill=C_BG)
-root.append(bg)
+root.append(Rect(0, 0, W, H, fill=C_BG))
 
-# Top panel (5-hour section)
-top_panel = Rect(0, 0, W, 60, fill=C_PANEL)
-root.append(top_panel)
-
-# "5H" label
-lbl_5h = Label(FONT, text="5H", color=C_DIM_TEXT, x=BAR_X, y=14)
-root.append(lbl_5h)
-
-# 5-hour bar — solid fill bitmap with outline, no background
-bar_outline = Rect(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2,
-                   fill=None, outline=C_DIM_TEXT)
-root.append(bar_outline)
-
-_BAR_PALETTE = displayio.Palette(5)
-_BAR_PALETTE.make_transparent(0)   # index 0 = transparent (panel shows through)
-_BAR_PALETTE[1] = C_BLUE
-_BAR_PALETTE[2] = C_AMBER
-_BAR_PALETTE[3] = C_ORANGE
-_BAR_PALETTE[4] = C_RED
-
-bar_bitmap = displayio.Bitmap(BAR_W, BAR_H, 5)
-bar_bitmap.fill(0)
-bar_tile = displayio.TileGrid(bar_bitmap, pixel_shader=_BAR_PALETTE,
-                              x=BAR_X, y=BAR_Y)
-root.append(bar_tile)
-
-# Status line (resets / burn rate / ETA)
-lbl_status = Label(FONT, text="", color=C_DIM_TEXT, x=BAR_X, y=50)
-root.append(lbl_status)
-
-# Separator line
-sep = Rect(0, 60, W, 1, fill=C_SEP)
-root.append(sep)
-
-# Chart area label
-lbl_chart = Label(FONT, text="24H", color=C_DIM_TEXT, x=BAR_X, y=70)
-root.append(lbl_chart)
-
-# Chart: single bitmap, all bars blue, transparent background
-# Palette: 0=transparent  1=blue
-_CHART_PALETTE = displayio.Palette(2)
-_CHART_PALETTE.make_transparent(0)
-_CHART_PALETTE[1] = C_BLUE
-
-chart_bitmap = displayio.Bitmap(CHART_W, CHART_H, 2)
-chart_bitmap.fill(0)
-chart_tile = displayio.TileGrid(chart_bitmap, pixel_shader=_CHART_PALETTE,
-                                x=CHART_X, y=CHART_Y)
-root.append(chart_tile)
-
-# Outline around chart
-chart_outline = Rect(CHART_X - 1, CHART_Y - 1, CHART_W + 2, CHART_H + 2,
-                     fill=None, outline=C_DIM_TEXT)
-root.append(chart_outline)
-
-# ---------------------------------------------------------------------------
-# Error / stale overlay elements
-# ---------------------------------------------------------------------------
-
-# "STALE" badge (top right)
-lbl_stale = Label(FONT, text="STALE", color=C_AMBER, x=W - 42, y=6)
-lbl_stale.hidden = True
-root.append(lbl_stale)
-
-# "NEEDS AUTH" overlay (center)
-lbl_auth = Label(FONT, text="NEEDS AUTH", color=C_ERROR, x=90, y=H // 2 - 8)
-lbl_auth.hidden = True
-root.append(lbl_auth)
-
-lbl_auth_hint = Label(FONT, text="update CLAUDE_SESSION_KEY", color=C_DIM_TEXT, x=28, y=H // 2 + 10)
-lbl_auth_hint.hidden = True
-root.append(lbl_auth_hint)
-
-# "NO SERVER" overlay (center)
-lbl_no_server = Label(FONT, text="NO SERVER", color=C_ERROR, x=96, y=H // 2 - 8)
-lbl_no_server.hidden = True
-root.append(lbl_no_server)
-
-lbl_no_server_hint = Label(FONT, text="can't reach " + SERVER_URL, color=C_DIM_TEXT, x=28, y=H // 2 + 10)
-lbl_no_server_hint.hidden = True
-root.append(lbl_no_server_hint)
-
-# ---------------------------------------------------------------------------
-# Update functions
-# ---------------------------------------------------------------------------
-
-def _bar_color_idx(pct, burn_fast=False):
-    if pct >= 95 or (burn_fast and pct >= 80): return 4   # red
-    if pct >= 80 or (burn_fast and pct >= 60): return 3   # orange
-    if pct >= 60 or (burn_fast and pct < 60):  return 2   # amber
-    return 1                                               # blue
+# Tachometer image — one TileGrid whose bitmap is swapped per frame.
+_tach0 = displayio.OnDiskBitmap(TACH_BMP.format(0))
+tach_tile = displayio.TileGrid(_tach0, pixel_shader=_tach0.pixel_shader,
+                               x=TACH_X, y=TACH_Y)
+root.append(tach_tile)
 
 
-def update_bar(pct, color_idx):
-    bar_bitmap.fill(0)
-    filled_w = max(0, min(BAR_W, int(round(pct / 100.0 * BAR_W))))
-    if filled_w > 0:
+def set_tach(idx):
+    # Each frame has its own palette, so swap shader and bitmap together.
+    img = displayio.OnDiskBitmap(TACH_BMP.format(idx))
+    tach_tile.bitmap = img
+    tach_tile.pixel_shader = img.pixel_shader
+
+
+# Numeric readout: a dark "88" ghost with the live value drawn on top.
+num_dark = Label(NUM_FONT, text="88", color=C_DARK, x=NUM_X, y=NUM_Y)
+root.append(num_dark)
+_num_digit_w = num_dark.bounding_box[2] // 2   # for right-aligning the live value
+
+num_live = Label(NUM_FONT, text="", color=C_LIGHT, x=NUM_X, y=NUM_Y)
+root.append(num_live)
+
+# Bottom-left status line.
+status_label = Label(STATUS_FONT, text="", color=C_LIGHT, x=STATUS_X, y=STATUS_Y)
+root.append(status_label)
+
+# Bottom-right 7-day utilisation bar.
+_bar7d_palette = displayio.Palette(2)
+_bar7d_palette[0] = C_DARK
+_bar7d_palette[1] = C_LIGHT
+bar7d_bitmap = displayio.Bitmap(BAR7D_W, BAR7D_H, 2)
+bar7d_bitmap.fill(0)
+root.append(displayio.TileGrid(bar7d_bitmap, pixel_shader=_bar7d_palette,
+                               x=BAR7D_X, y=BAR7D_Y))
+
+# Centered error overlay.
+overlay = Label(STATUS_FONT, text="", color=C_ERROR)
+overlay.anchor_point = (0.5, 0.5)
+overlay.anchored_position = (W // 2, H // 2)
+overlay.hidden = True
+root.append(overlay)
+
+# --- Update functions -------------------------------------------------------
+
+
+def tach_fraction(fh):
+    ratio = fh.get("redline_ratio")
+    if ratio is None:
+        return 0.0
+    return _clamp01(ratio / TACH_FULL_SCALE)
+
+
+def update_tach(fh):
+    frac = tach_fraction(fh)
+    set_tach(int(round(frac * (TACH_FRAMES - 1))))
+    txt = str(int(round(frac * 99)))
+    num_live.text = txt
+    num_live.x = NUM_X + (2 - len(txt)) * _num_digit_w
+
+
+def update_status_line(fh):
+    reset_at = fh.get("resets_at_unix") or 0
+    burn = fh.get("burn_rate_pct_per_hour") or 0.0
+    used = fh.get("used_pct") or 0.0
+    parts = []
+    if reset_at:
+        parts.append("resets " + fmt_hhmm(reset_at))
+    if burn > 0:
+        parts.append("{:.1f}%/hr".format(burn))
+        eta = min(int((100.0 - used) / burn * 3600), 24 * 3600)
+        parts.append("→ " + fmt_duration(eta))
+    status_label.text = " · ".join(parts)
+
+
+def update_bar7d(sd):
+    used = sd.get("used_pct") or 0.0
+    filled = int(round(_clamp01(used / 100.0) * BAR7D_W))
+    bar7d_bitmap.fill(0)
+    if filled > 0:
         if _HAS_BITMAPTOOLS:
-            bitmaptools.fill_region(bar_bitmap, 0, 0, filled_w, BAR_H, color_idx)
+            bitmaptools.fill_region(bar7d_bitmap, 0, 0, filled, BAR7D_H, 1)
         else:
-            for y in range(BAR_H):
-                for x in range(filled_w):
-                    bar_bitmap[x, y] = color_idx
+            for y in range(BAR7D_H):
+                for x in range(filled):
+                    bar7d_bitmap[x, y] = 1
 
 
-def _fill_col(x0, y0, x1, y1, idx):
-    if _HAS_BITMAPTOOLS:
-        bitmaptools.fill_region(chart_bitmap, x0, y0, x1, y1, idx)
-    else:
-        for y in range(y0, y1):
-            for x in range(x0, x1):
-                chart_bitmap[x, y] = idx
-
-
-def update_chart(buckets):
-    chart_bitmap.fill(0)  # clear to unfilled
-    for i, bucket in enumerate(buckets):
-        if i >= 24:
-            break
-        peak = bucket.get("five_hour_peak")
-        if peak is None:
-            continue
-        h = max(1, int(peak / 100.0 * CHART_H))
-        x0 = i * (BAR_CW + BAR_CGAP)
-        _fill_col(x0, CHART_H - h, x0 + BAR_CW, CHART_H, 1)  # always blue
+def _apply(data):
+    fh = data.get("five_hour") or {}
+    sd = data.get("seven_day") or {}
+    update_tach(fh)
+    update_status_line(fh)
+    update_bar7d(sd)
 
 
 def show_normal(data):
     board.DISPLAY.brightness = 1.0
-
-    fh = data.get("five_hour") or {}
-    pct_5h   = fh.get("used_pct") or 0.0
-    reset_5h = fh.get("resets_at_unix") or 0
-    burn     = fh.get("burn_rate_pct_per_hour") or 0.0
-    redline  = fh.get("redline_ratio")
-
-    burn_fast = (redline is not None) and (redline > 1.0)
-
-    update_bar(pct_5h, _bar_color_idx(pct_5h, burn_fast))
-
-    # Status line
-    parts = []
-    if reset_5h:
-        parts.append("resets " + fmt_hhmm(reset_5h))
-    if burn > 0:
-        parts.append("{:.1f}%/hr".format(burn))
-        eta_secs = min(int((100.0 - pct_5h) / burn * 3600), 24 * 3600)
-        parts.append("→ " + fmt_duration(eta_secs))
-    lbl_status.text = " · ".join(parts) if parts else ""
-
-    lbl_stale.hidden = True
-    lbl_auth.hidden = True
-    lbl_auth_hint.hidden = True
-    lbl_no_server.hidden = True
-    lbl_no_server_hint.hidden = True
+    overlay.hidden = True
+    _apply(data)
 
 
 def show_stale(data):
-    # Show last data dimmed
-    show_normal(data)
+    _apply(data)
+    overlay.hidden = True
     board.DISPLAY.brightness = 0.4
-    lbl_stale.hidden = False
-    lbl_auth.hidden = True
-    lbl_auth_hint.hidden = True
-    lbl_no_server.hidden = True
-    lbl_no_server_hint.hidden = True
 
 
 def show_auth_failed(data):
-    show_stale(data)
+    _apply(data)
+    overlay.text = "NEEDS AUTH"
+    overlay.hidden = False
     board.DISPLAY.brightness = 0.3
-    lbl_stale.hidden = True
-    lbl_auth.hidden = False
-    lbl_auth_hint.hidden = False
 
 
-def show_no_server(detail=""):
+def show_no_server(detail):
+    print("no server:", detail)
+    overlay.text = "NO WIFI" if not esp.is_connected else "NO SERVER"
+    overlay.hidden = False
     board.DISPLAY.brightness = 0.5
-    lbl_stale.hidden = True
-    lbl_auth.hidden = True
-    lbl_auth_hint.hidden = True
-    if not esp.is_connected:
-        lbl_no_server.text = "NO WIFI"
-        lbl_no_server_hint.text = "not connected to " + SSID
-    else:
-        lbl_no_server.text = "NO SERVER"
-        lbl_no_server_hint.text = (detail or SERVER_URL)[:40]
-    lbl_no_server.hidden = False
-    lbl_no_server_hint.hidden = False
 
 
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
+# --- WiFi -------------------------------------------------------------------
 
-def fetch_history():
+
+def wifi_kickoff():
+    """Start a non-blocking join (the ESP was reset at boot)."""
+    time.sleep(0.3)
     try:
-        resp = requests.get(SERVER_URL + "/history?hours=24", timeout=15)
-        if resp.status_code == 200:
-            hist = resp.json()
-            resp.close()
-            update_chart(hist.get("buckets", []))
-        else:
-            resp.close()
-    except Exception as e:
-        print("history fetch exception:", type(e).__name__, e)
-    gc.collect()
+        esp.wifi_set_passphrase(SSID, PASSWORD)
+        print("WiFi: join started for", SSID)
+    except Exception as exc:
+        print("WiFi: kickoff failed:", exc)
 
 
-wifi_connect()
+def wifi_finish():
+    """Block until connected, re-kicking every ~5s, then open a session."""
+    global requests
+    tries = 0
+    while not esp.is_connected:
+        time.sleep(0.5)
+        tries += 1
+        if tries % 10 == 0:
+            print("WiFi: still joining, re-kicking")
+            try:
+                esp.connect_AP(SSID, PASSWORD)
+            except Exception as exc:
+                print("WiFi: retry failed:", exc)
+    print("WiFi: connected, IP =", esp.pretty_ip(esp.ip_address))
+    pool = adafruit_connection_manager.get_radio_socketpool(esp)
+    requests = adafruit_requests.Session(pool)
 
-last_status = {}
-poll_count  = 0
 
-# Populate the chart immediately before entering the poll loop
-fetch_history()
+# --- Boot -------------------------------------------------------------------
+# Background, tach0 and the dark "88" are already on screen. Join WiFi.
+wifi_kickoff()
+wifi_finish()
+
+# --- Main loop --------------------------------------------------------------
+last_data = {}
 
 while True:
-    # --- fetch /status ---
     server_ok = False
     server_error = ""
     try:
         resp = requests.get(SERVER_URL + "/status", timeout=10)
         if resp.status_code == 200:
-            data = resp.json()
-            resp.close()
+            last_data = resp.json()
             server_ok = True
-            last_status = data
         else:
             server_error = "HTTP {}".format(resp.status_code)
-            print("status fetch failed:", server_error)
-            resp.close()
-    except Exception as e:
-        server_error = "{}: {}".format(type(e).__name__, e)
-        print("status fetch exception:", server_error)
+        resp.close()
+    except Exception as exc:
+        server_error = "{}: {}".format(type(exc).__name__, exc)
+        print("status fetch failed:", server_error)
 
     gc.collect()
 
     if not server_ok:
         show_no_server(server_error)
-    elif last_status.get("auth_failed"):
-        show_auth_failed(last_status)
-    elif last_status.get("stale"):
-        show_stale(last_status)
+    elif last_data.get("auth_failed"):
+        show_auth_failed(last_data)
+    elif last_data.get("stale"):
+        show_stale(last_data)
     else:
-        show_normal(last_status)
-
-    # --- refresh /history every N polls ---
-    poll_count += 1
-    if server_ok and poll_count % HIST_EVERY == 0:
-        fetch_history()
+        show_normal(last_data)
 
     time.sleep(POLL_SECS)

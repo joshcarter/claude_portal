@@ -12,6 +12,8 @@ log = logging.getLogger(__name__)
 
 CLAUDE_BASE = "https://claude.ai"
 STALE_AFTER = 300  # 5 minutes
+SEVEN_DAY_BURN_BASELINE = 3 * 3600  # 7d utilization moves slowly; a 30-min delta is just noise
+MAX_REDLINE_RATIO = 10.0
 
 
 def _session_key() -> str:
@@ -59,6 +61,41 @@ def _compute_burn_rate(store: Store) -> tuple[float, Optional[int]]:
 
     hours_to_full = min((100.0 - latest_pct) / rate, 24.0)
     return rate, now + int(hours_to_full * 3600)
+
+
+def _compute_seven_day_burn(store: Store) -> float:
+    """7-day burn rate (pct/hour) over a multi-hour baseline; 0.0 if decaying or sparse."""
+    now = int(time.time())
+    rows = store.recent_seven_day(now - SEVEN_DAY_BURN_BASELINE)
+    if len(rows) < 2:
+        return 0.0
+
+    earliest_ts, earliest_pct = rows[0]
+    latest_ts, latest_pct = rows[-1]
+    dt_hours = (latest_ts - earliest_ts) / 3600
+    if dt_hours < 1.0:
+        return 0.0
+
+    rate = (latest_pct - earliest_pct) / dt_hours
+    return rate if rate > 0 else 0.0
+
+
+def _seven_day_redline(
+    pct: float, resets_at: Optional[int], burn: float, now: int
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (sustainable pct/hour, redline_ratio) for the 7-day window; ratio 1.0 = redline."""
+    if resets_at is None:
+        return None, None
+    hours_to_reset = (resets_at - now) / 3600
+    if hours_to_reset <= 0:
+        return None, None
+
+    sustainable = max(0.0, (100.0 - pct) / hours_to_reset)
+    if burn <= 0:
+        return sustainable, 0.0
+    if sustainable <= 0:
+        return sustainable, MAX_REDLINE_RATIO
+    return sustainable, min(burn / sustainable, MAX_REDLINE_RATIO)
 
 
 async def polling_loop(store: Store) -> None:
@@ -120,16 +157,25 @@ async def polling_loop(store: Store) -> None:
 
                     burn_rate, projected = _compute_burn_rate(store)
 
+                    seven_resets = _iso_to_unix(sd["resets_at"])
+                    seven_burn = _compute_seven_day_burn(store)
+                    seven_sustainable, seven_ratio = _seven_day_redline(
+                        seven_pct, seven_resets, seven_burn, now
+                    )
+
                     state.snapshot.five_hour_pct = five_pct
                     state.snapshot.five_hour_resets_at = _iso_to_unix(fh["resets_at"])
                     state.snapshot.seven_day_pct = seven_pct
-                    state.snapshot.seven_day_resets_at = _iso_to_unix(sd["resets_at"])
+                    state.snapshot.seven_day_resets_at = seven_resets
                     state.snapshot.seven_day_opus_pct = opus_pct
                     state.snapshot.seven_day_opus_resets_at = (
                         _iso_to_unix(sdo["resets_at"]) if sdo else None
                     )
                     state.snapshot.burn_rate = burn_rate
                     state.snapshot.projected_full_at = projected
+                    state.snapshot.seven_day_burn_rate = seven_burn
+                    state.snapshot.seven_day_sustainable_rate = seven_sustainable
+                    state.snapshot.seven_day_redline_ratio = seven_ratio
                     state.snapshot.stale = False
                     state.snapshot.auth_failed = False
                     state.snapshot.last_update = now
@@ -137,10 +183,11 @@ async def polling_loop(store: Store) -> None:
                     backoff = interval
 
                     log.debug(
-                        "Polled: 5h=%.1f%% 7d=%.1f%% burn=%.2f%%/hr",
+                        "Polled: 5h=%.1f%% 7d=%.1f%% burn=%.2f%%/hr 7d_redline=%s",
                         five_pct,
                         seven_pct,
                         burn_rate,
+                        "n/a" if seven_ratio is None else "{:.2f}".format(seven_ratio),
                     )
 
                 except (KeyError, ValueError, TypeError) as exc:

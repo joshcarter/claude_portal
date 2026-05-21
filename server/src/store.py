@@ -54,6 +54,13 @@ class Store:
                 (since_ts,),
             ).fetchall()
 
+    def recent_seven_day(self, since_ts: int) -> list[tuple[int, float]]:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT ts, seven_day FROM samples WHERE ts >= ? AND seven_day IS NOT NULL ORDER BY ts",
+                (since_ts,),
+            ).fetchall()
+
     def hourly_peaks(self, hours: int) -> list[dict]:
         now = int(time.time())
         # align to start of current UTC hour

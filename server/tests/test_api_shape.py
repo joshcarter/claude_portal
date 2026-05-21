@@ -23,6 +23,9 @@ def reset_state():
     state.snapshot.seven_day_opus_resets_at = 1745812800
     state.snapshot.burn_rate = 8.3
     state.snapshot.projected_full_at = 1745540000
+    state.snapshot.seven_day_burn_rate = 1.2
+    state.snapshot.seven_day_sustainable_rate = 0.5
+    state.snapshot.seven_day_redline_ratio = 2.4
     state.snapshot.stale = False
     state.snapshot.auth_failed = False
     state.snapshot.last_update = int(time.time())
@@ -59,6 +62,9 @@ def test_status_shape(client):
     assert "resets_at_unix" in body["five_hour"]
 
     assert "seven_day" in body
+    assert body["seven_day"]["burn_rate_pct_per_hour"] == 1.2
+    assert body["seven_day"]["sustainable_pct_per_hour"] == 0.5
+    assert body["seven_day"]["redline_ratio"] == 2.4
     assert "seven_day_opus" in body
 
     assert isinstance(body["burn_rate_pct_per_hour"], float)

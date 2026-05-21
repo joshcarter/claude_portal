@@ -12,6 +12,9 @@ class Snapshot:
     seven_day_opus_resets_at: Optional[int] = None
     burn_rate: float = 0.0
     projected_full_at: Optional[int] = None
+    seven_day_burn_rate: float = 0.0
+    seven_day_sustainable_rate: Optional[float] = None
+    seven_day_redline_ratio: Optional[float] = None
     stale: bool = True
     auth_failed: bool = False
     last_update: int = 0

@@ -55,6 +55,9 @@ def status():
         "seven_day": {
             "used_pct": s.seven_day_pct,
             "resets_at_unix": s.seven_day_resets_at,
+            "burn_rate_pct_per_hour": s.seven_day_burn_rate,
+            "sustainable_pct_per_hour": s.seven_day_sustainable_rate,
+            "redline_ratio": s.seven_day_redline_ratio,
         },
         "seven_day_opus": seven_day_opus,
         "burn_rate_pct_per_hour": s.burn_rate,

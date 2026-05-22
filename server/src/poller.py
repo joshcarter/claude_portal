@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 CLAUDE_BASE = "https://claude.ai"
 STALE_AFTER = 300  # 5 minutes
 SEVEN_DAY_BURN_BASELINE = 3 * 3600  # 7d utilization moves slowly; a 30-min delta is just noise
+FIVE_HOUR_BURN_WINDOW = 30 * 60  # regression window for the 5h burn rate
+FIVE_HOUR_BURN_MIN_SPAN = 10 / 60  # hours of spread required before a slope is trusted
 MAX_REDLINE_RATIO = 10.0
 
 
@@ -24,7 +26,7 @@ def _session_key() -> str:
 
 
 def _poll_interval() -> int:
-    return int(os.environ.get("POLL_INTERVAL_SECONDS", "120"))
+    return int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
 
 
 async def _fetch_org_id(session: AsyncSession) -> Optional[str]:
@@ -44,21 +46,37 @@ async def _fetch_org_id(session: AsyncSession) -> Optional[str]:
 
 
 def _burn_rate(rows: list[tuple[int, float]], min_dt_hours: float) -> float:
-    """Linear burn rate (pct/hour) across the sample window; 0.0 if decaying or too sparse."""
+    """Least-squares burn rate (pct/hour) across the sample window; 0.0 if decaying or too sparse.
+
+    Uses every sample, not just the endpoints, so integer-quantized utilization
+    readings average out instead of jolting the slope as steps age in and out.
+    """
     if len(rows) < 2:
         return 0.0
 
-    (earliest_ts, earliest_pct), (latest_ts, latest_pct) = rows[0], rows[-1]
-    dt_hours = (latest_ts - earliest_ts) / 3600
-    if dt_hours < min_dt_hours:
+    if (rows[-1][0] - rows[0][0]) / 3600 < min_dt_hours:
         return 0.0
 
-    rate = (latest_pct - earliest_pct) / dt_hours
+    n = len(rows)
+    t0 = rows[0][0]
+    ts = [(ts - t0) / 3600 for ts, _ in rows]
+    ys = [pct for _, pct in rows]
+    mean_t = sum(ts) / n
+    mean_y = sum(ys) / n
+    var_t = sum((t - mean_t) ** 2 for t in ts)
+    if var_t == 0:
+        return 0.0
+
+    cov = sum((t - mean_t) * (y - mean_y) for t, y in zip(ts, ys))
+    rate = cov / var_t
     return rate if rate > 0 else 0.0
 
 
 def _compute_five_hour_burn(store: Store) -> float:
-    return _burn_rate(store.recent_five_hour(int(time.time()) - 30 * 60), 1e-4)
+    return _burn_rate(
+        store.recent_five_hour(int(time.time()) - FIVE_HOUR_BURN_WINDOW),
+        FIVE_HOUR_BURN_MIN_SPAN,
+    )
 
 
 def _compute_seven_day_burn(store: Store) -> float:

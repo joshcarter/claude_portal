@@ -19,11 +19,12 @@ def test_seven_day_burn_positive():
     store = make_store()
     now = int(time.time())
     store.insert(now - 3 * 3600, 50.0, 60.0, None)
-    store.insert(now - 1 * 3600, 52.0, 63.0, None)
-    store.insert(now,            54.0, 66.0, None)
+    store.insert(now - 2 * 3600, 52.0, 62.0, None)
+    store.insert(now - 1 * 3600, 54.0, 64.0, None)
+    store.insert(now,            56.0, 66.0, None)
 
     rate = _compute_seven_day_burn(store)
-    assert rate == 2.0  # 60 -> 66 over 3h
+    assert abs(rate - 2.0) < 1e-6  # 60 -> 66 over 3h
 
 
 def test_seven_day_burn_decaying():

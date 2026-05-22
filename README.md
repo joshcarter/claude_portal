@@ -6,7 +6,7 @@ Physical desk display showing Claude Pro/Max rate-limit burn rate on an Adafruit
 
 ```
 claude.ai/api/organizations/{id}/usage
-        ↓ HTTPS ~120s
+        ↓ HTTPS ~60s
 server/       (Python + FastAPI in Docker, home server)
         ↓ HTTP ~30s
 pyportal/     (CircuitPython on Adafruit PyPortal)
@@ -65,7 +65,7 @@ When the cookie expires the PyPortal will show "NEEDS AUTH" at reduced brightnes
 |-----|----------|---------|-------|
 | `CLAUDE_SESSION_KEY` | yes | — | Cookie value |
 | `CLAUDE_ORG_ID` | no | auto-discover | Pin a specific org |
-| `POLL_INTERVAL_SECONDS` | no | `120` | |
+| `POLL_INTERVAL_SECONDS` | no | `60` | |
 | `LISTEN_PORT` | no | `7654` | |
 | `DB_PATH` | no | `/data/samples.db` | Mount `/data` as a volume |
 

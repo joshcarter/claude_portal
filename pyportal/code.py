@@ -117,13 +117,18 @@ _tach0 = displayio.OnDiskBitmap(TACH_BMP.format(0))
 tach_tile = displayio.TileGrid(_tach0, pixel_shader=_tach0.pixel_shader,
                                x=TACH_X, y=TACH_Y)
 root.append(tach_tile)
+_tach_current_idx = 0
 
 
 def set_tach(idx):
+    global _tach_current_idx
+    if idx == _tach_current_idx:
+        return
     # Each frame has its own palette, so swap shader and bitmap together.
     img = displayio.OnDiskBitmap(TACH_BMP.format(idx))
     tach_tile.bitmap = img
     tach_tile.pixel_shader = img.pixel_shader
+    _tach_current_idx = idx
 
 
 # Numeric readout: a dark "88" ghost with the live value drawn on top.

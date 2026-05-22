@@ -15,7 +15,7 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "png")
-DST = os.path.join(HERE, "bmp")
+DST = os.path.join(os.path.dirname(HERE), "pyportal", "bmp")
 
 os.makedirs(DST, exist_ok=True)
 

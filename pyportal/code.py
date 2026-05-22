@@ -46,7 +46,9 @@ W, H = 320, 240
 TACH_BMP        = "/bmp/tach{}.bmp"
 TACH_FRAMES     = 21               # tach0 .. tach20
 TACH_X, TACH_Y  = 12, 14
-TACH_FULL_SCALE = 2.0              # 5H redline_ratio that lights every segment
+REDLINE_FRAME   = 17               # frame for redline_ratio == 1.0 (top of yellow)
+BLUE_EXPONENT   = 0.5              # scale curve below redline; <1 = sensitive at low use
+RED_FULL_RATIO  = 2.0              # redline_ratio that pegs the gauge at tach20
 
 NUM_FONT_PATH = "/fonts/DESG7Modern-Italic-40.bdf"
 NUM_X, NUM_Y  = 180, 160           # left/baseline of the "88" ghost
@@ -155,17 +157,22 @@ root.append(overlay)
 # --- Update functions -------------------------------------------------------
 
 
-def tach_fraction(fh):
-    ratio = fh.get("redline_ratio")
-    if ratio is None:
+def tach_position(ratio):
+    # 5H redline_ratio -> continuous gauge position, 0.0 .. TACH_FRAMES-1.
+    # Concave below the redline (sensitive at low use), linear above it.
+    if not ratio or ratio <= 0:
         return 0.0
-    return _clamp01(ratio / TACH_FULL_SCALE)
+    if ratio <= 1.0:
+        return REDLINE_FRAME * ratio ** BLUE_EXPONENT
+    top = TACH_FRAMES - 1
+    over = (ratio - 1.0) / (RED_FULL_RATIO - 1.0)
+    return min(top, REDLINE_FRAME + (top - REDLINE_FRAME) * over)
 
 
 def update_tach(fh):
-    frac = tach_fraction(fh)
-    set_tach(int(round(frac * (TACH_FRAMES - 1))))
-    txt = str(int(round(frac * 99)))
+    pos = tach_position(fh.get("redline_ratio"))
+    set_tach(int(round(pos)))
+    txt = str(int(round(pos / (TACH_FRAMES - 1) * 99)))
     num_live.text = txt
     num_live.x = NUM_X + (2 - len(txt)) * _num_digit_w
 

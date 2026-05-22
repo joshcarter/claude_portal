@@ -30,9 +30,10 @@ See [pyportal/README.md](pyportal/README.md) for library and font installation.
 
 ```
 # Copy to CIRCUITPY:
-pyportal/code.py               → /code.py
-pyportal/settings.toml         → /settings.toml   (fill in your values)
-fonts/Dogica-Pixel-8.bdf       → /fonts/Dogica-Pixel-8.bdf
+pyportal/code.py        → /code.py
+pyportal/settings.toml  → /settings.toml   (fill in your values)
+pyportal/fonts/         → /fonts/
+pyportal/bmp/           → /bmp/
 ```
 
 ### 3. Mock server (development)
@@ -43,8 +44,8 @@ If the home server isn't running yet, you can serve fake data locally to test th
 python3 mock_server/mock_server.py [port]   # default port: 7654
 ```
 
-The mock server oscillates 5H usage on a 4-minute cycle and generates a
-workday-shaped 24H histogram. Point the PyPortal at your Mac's IP.
+The mock server oscillates the 5H and 7D values on short cycles so you can
+watch the gauge and bar move. Point the PyPortal at your Mac's IP.
 
 ## Auth setup (first time + after cookie expiry)
 

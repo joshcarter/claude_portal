@@ -34,6 +34,10 @@ SERVER_URL = os.getenv("HOMESERVER_URL", "http://home.local:7654")
 POLL_SECS  = int(os.getenv("POLL_SECONDS", "30"))
 UTC_OFFSET = int(os.getenv("UTC_OFFSET_HOURS", "0"))
 
+# Failure tolerance: consecutive poll failures before the display reacts.
+FAIL_THRESHOLD  = 3   # show the error overlay (until then, keep dimmed last-good)
+RESET_THRESHOLD = 6   # hard-reset the ESP32 as a last resort
+
 # --- Colors -----------------------------------------------------------------
 C_BG    = 0x000000
 C_DARK  = 0x0B1D20   # unlit "ghost" segments and 7D bar background
@@ -238,7 +242,11 @@ def show_auth_failed(data):
 
 def show_no_server(detail):
     print("no server:", detail)
-    overlay.text = "NO WIFI" if not esp.is_connected else "NO SERVER"
+    try:
+        connected = esp.is_connected
+    except Exception:
+        connected = False
+    overlay.text = "NO SERVER" if connected else "NO WIFI"
     overlay.hidden = False
     board.DISPLAY.brightness = 0.5
 
@@ -265,13 +273,28 @@ def wifi_finish():
         tries += 1
         if tries % 10 == 0:
             print("WiFi: still joining, re-kicking")
-            try:
-                esp.connect_AP(SSID, PASSWORD)
-            except Exception as exc:
-                print("WiFi: retry failed:", exc)
+            wifi_kickoff()
     print("WiFi: connected, IP =", esp.pretty_ip(esp.ip_address))
     pool = adafruit_connection_manager.get_radio_socketpool(esp)
     requests = adafruit_requests.Session(pool)
+
+
+def wifi_recover(hard_reset=False):
+    """Re-establish WiFi after a drop. Never raises — recovery must not crash
+    the loop. With hard_reset, fully reset the ESP32 to un-wedge the SPI
+    co-processor before rejoining."""
+    try:
+        adafruit_connection_manager.connection_manager_close_all(
+            release_references=True)
+        if hard_reset:
+            print("WiFi: hard-resetting ESP32")
+            esp.reset()
+            time.sleep(1)
+        if hard_reset or not esp.is_connected:
+            wifi_kickoff()
+            wifi_finish()   # blocks until connected, rebuilds the session
+    except Exception as exc:
+        print("WiFi: recover failed:", exc)
 
 
 # --- Boot -------------------------------------------------------------------
@@ -281,10 +304,12 @@ wifi_finish()
 
 # --- Main loop --------------------------------------------------------------
 last_data = {}
+fail_count = 0
 
 while True:
     server_ok = False
     server_error = ""
+    resp = None
     try:
         resp = requests.get(SERVER_URL + "/status", timeout=10)
         if resp.status_code == 200:
@@ -292,20 +317,35 @@ while True:
             server_ok = True
         else:
             server_error = "HTTP {}".format(resp.status_code)
-        resp.close()
     except Exception as exc:
         server_error = "{}: {}".format(type(exc).__name__, exc)
         print("status fetch failed:", server_error)
+        # Free any sockets the failed request may have leaked.
+        adafruit_connection_manager.connection_manager_close_all(
+            release_references=True)
+    finally:
+        if resp:
+            resp.close()
 
     gc.collect()
 
-    if not server_ok:
-        show_no_server(server_error)
-    elif last_data.get("auth_failed"):
-        show_auth_failed(last_data)
-    elif last_data.get("stale"):
-        show_stale(last_data)
+    if server_ok:
+        fail_count = 0
+        if last_data.get("auth_failed"):
+            show_auth_failed(last_data)
+        elif last_data.get("stale"):
+            show_stale(last_data)
+        else:
+            show_normal(last_data)
     else:
-        show_normal(last_data)
+        fail_count += 1
+        # Escalation ladder: ride out brief blips on dimmed last-good data,
+        # then reconnect WiFi, then hard-reset the ESP as a last resort.
+        if last_data and fail_count < FAIL_THRESHOLD:
+            show_stale(last_data)
+        else:
+            show_no_server(server_error)
+        if fail_count >= FAIL_THRESHOLD:
+            wifi_recover(hard_reset=fail_count >= RESET_THRESHOLD)
 
     time.sleep(POLL_SECS)

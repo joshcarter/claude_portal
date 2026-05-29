@@ -258,22 +258,17 @@ def wifi_kickoff():
     """Start a non-blocking join (the ESP was reset at boot)."""
     time.sleep(0.3)
     try:
-        esp.wifi_set_passphrase(SSID, PASSWORD)
+        esp.wifi_set_passphrase(bytes(SSID, "utf-8"), bytes(PASSWORD, "utf-8"))
         print("WiFi: join started for", SSID)
     except Exception as exc:
         print("WiFi: kickoff failed:", exc)
 
 
 def wifi_finish():
-    """Block until connected, re-kicking every ~5s, then open a session."""
+    """Block until connected, then open a session."""
     global requests
-    tries = 0
     while not esp.is_connected:
         time.sleep(0.5)
-        tries += 1
-        if tries % 10 == 0:
-            print("WiFi: still joining, re-kicking")
-            wifi_kickoff()
     print("WiFi: connected, IP =", esp.pretty_ip(esp.ip_address))
     pool = adafruit_connection_manager.get_radio_socketpool(esp)
     requests = adafruit_requests.Session(pool)
